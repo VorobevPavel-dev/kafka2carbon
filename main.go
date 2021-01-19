@@ -4,6 +4,7 @@ import (
 	"flag"
 	"net"
 	"os"
+	"time"
 
 	log "github.com/sirupsen/logrus"
 
@@ -53,6 +54,7 @@ func init() {
 	}
 
 	var err error
+	dstAddrConnection = nil
 	//Preparing connection to target to send data
 	for i := 1; i <= userSession.GeneralSettings.RetryCount; i++ {
 		dstAddrConnection, err = net.Dial("tcp", userSession.ConnectionSettings.Destination)
@@ -62,8 +64,11 @@ func init() {
 			log.Infof("%s Connection to destination target (%s) establihed", logPrefix, userSession.ConnectionSettings.Destination)
 			break
 		}
+		time.Sleep(time.Duration(userSession.GeneralSettings.TCPConnectionRetryTimeout) * time.Second)
 	}
-
+	if dstAddrConnection == nil {
+		log.Fatalf("%s Cannot connect to destination", logPrefix)
+	}
 	//Init main channel for gathering and sending data
 	outChannel = make(chan []byte)
 }

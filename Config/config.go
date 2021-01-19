@@ -22,8 +22,9 @@ type General struct {
 	ConsumerMaxProcessingTime int   `toml:"ConsumerMaxProcessingTime"`
 	MarkEveryMessage          int64 `toml:"MarkEveryMessage"`
 	HTTPStatisticsPort        int   `toml:"HTTPStatisticsPort"`
-	TCPConnectionRetryTimeout int   `toml:"TCPConnectionRetryTimeout"`
-	RetryCount                int   `toml:"RetryCount"`
+	//Time in seconds to wait for new connection
+	TCPConnectionRetryTimeout int `toml:"TCPConnectionRetryTimeout"`
+	RetryCount                int `toml:"RetryCount"`
 }
 
 //Connection is a part of Config
