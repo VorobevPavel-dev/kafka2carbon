@@ -23,6 +23,7 @@ type General struct {
 	MarkEveryMessage          int64 `toml:"MarkEveryMessage"`
 	HTTPStatisticsPort        int   `toml:"HTTPStatisticsPort"`
 	TCPConnectionRetryTimeout int   `toml:"TCPConnectionRetryTimeout"`
+	RetryCount                int   `toml:"RetryCount"`
 }
 
 //Connection is a part of Config
