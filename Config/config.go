@@ -19,12 +19,17 @@ type Config struct {
 
 //General is a part of Config
 type General struct {
+	//Time in milliseconds
 	ConsumerMaxProcessingTime int   `toml:"ConsumerMaxProcessingTime"`
 	MarkEveryMessage          int64 `toml:"MarkEveryMessage"`
 	HTTPStatisticsPort        int   `toml:"HTTPStatisticsPort"`
 	//Time in seconds to wait for new connection
 	TCPConnectionRetryTimeout int `toml:"TCPConnectionRetryTimeout"`
 	RetryCount                int `toml:"RetryCount"`
+	//Messages to send per one package
+	BucketSize int32 `toml:"BucketSize"`
+	//Messages total to store
+	BufferSize int `toml:"BufferSize"`
 }
 
 //Connection is a part of Config
