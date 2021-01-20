@@ -85,6 +85,7 @@ func init() {
 		log.SetLevel(log.TraceLevel)
 		break
 	}
+	log.Println("%s Current messaging level: %s", logPrefix, userSession.LoggingSettings.LogLevel)
 
 	var err error
 	dstAddrConnection = nil
