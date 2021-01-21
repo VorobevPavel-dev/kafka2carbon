@@ -1,15 +1,13 @@
 package main
 
 import (
-	"bufio"
 	"context"
+	"errors"
 	"flag"
 	"net"
 	"os"
 	"os/signal"
-	"strings"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -25,12 +23,8 @@ var (
 	dstAddrConnection net.Conn
 	consumer          Consumer
 	userSession       config.Config
+	client            sarama.ConsumerGroup
 )
-
-//Consumer messages you that kafka2carbon is ready
-type Consumer struct {
-	ready chan bool
-}
 
 func init() {
 	logPrefix := "[main][Init]"
@@ -39,6 +33,28 @@ func init() {
 
 	userSession = config.Parse(configFile)
 
+	var err error
+	dstAddrConnection = nil
+	//Preparing connection to target to send data
+	for i := 1; i <= userSession.GeneralSettings.RetryCount; i++ {
+		dstAddrConnection, err = net.Dial("tcp", userSession.ConnectionSettings.Destination)
+		log.Warnf("%s Trying to connect to destination target. Attempts left: %d", logPrefix, userSession.GeneralSettings.RetryCount-i)
+		// If no error then target is avaliable
+		if err == nil {
+			log.Infof("%s Connection to destination target (%s) establihed", logPrefix, userSession.ConnectionSettings.Destination)
+			break
+		}
+		time.Sleep(time.Duration(userSession.GeneralSettings.TCPConnectionRetryTimeout) * time.Second)
+	}
+	if dstAddrConnection == nil {
+		log.Fatalf("%s Cannot connect to destination", logPrefix)
+	}
+	//Init main channel for gathering and sending data
+	outChannel = make(chan []byte, userSession.GeneralSettings.BufferSize)
+}
+
+func main() {
+	logPrefix := "[main][main]"
 	//Preparing log target
 	if userSession.LoggingSettings.Output == "stderr" {
 		log.SetOutput(os.Stderr)
@@ -52,12 +68,13 @@ func init() {
 			}
 		}
 		//Try to open log file
-		file, err := os.Open(userSession.LoggingSettings.Output)
+		file, err := os.OpenFile(userSession.LoggingSettings.Output, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0666)
 		if err != nil {
 			log.Fatalf("%s Cannot open log file %s", logPrefix, userSession.LoggingSettings.Output)
 		} else {
 			log.SetOutput(file)
 		}
+		defer file.Close()
 		log.Infof("%s Log target initialized at %s", logPrefix, userSession.LoggingSettings.Output)
 	}
 
@@ -86,28 +103,6 @@ func init() {
 		break
 	}
 
-	var err error
-	dstAddrConnection = nil
-	//Preparing connection to target to send data
-	for i := 1; i <= userSession.GeneralSettings.RetryCount; i++ {
-		dstAddrConnection, err = net.Dial("tcp", userSession.ConnectionSettings.Destination)
-		log.Warnf("%s Trying to connect to destination target. Attempts left: %d", logPrefix, userSession.GeneralSettings.RetryCount-i)
-		// If no error then target is avaliable
-		if err == nil {
-			log.Infof("%s Connection to destination target (%s) establihed", logPrefix, userSession.ConnectionSettings.Destination)
-			break
-		}
-		time.Sleep(time.Duration(userSession.GeneralSettings.TCPConnectionRetryTimeout) * time.Second)
-	}
-	if dstAddrConnection == nil {
-		log.Fatalf("%s Cannot connect to destination", logPrefix)
-	}
-	//Init main channel for gathering and sending data
-	outChannel = make(chan []byte, userSession.GeneralSettings.BufferSize)
-}
-
-func main() {
-	logPrefix := "[main][main]"
 	//Starting function to build messages in buckets
 	go buildMessage()
 
@@ -154,9 +149,11 @@ func main() {
 	log.Infof("%s Sarama consumer was created", logPrefix)
 
 	ctx, cancel := context.WithCancel(context.Background())
+	//Setting close handler
+	setupCloseHandler(cancel)
 
 	//Creating a new consumer group
-	client, err := sarama.NewConsumerGroup(
+	client, err = sarama.NewConsumerGroup(
 		userSession.ConnectionSettings.Brokers,
 		userSession.ConnectionSettings.Group,
 		saramaConfig,
@@ -176,7 +173,7 @@ func main() {
 				[]string{userSession.ConnectionSettings.Topic},
 				&consumer,
 			); err != nil {
-				log.Fatal("%s Error while consuming %v", logPrefix, err)
+				log.Fatalf("%s Error while consuming %v", logPrefix, err)
 			}
 			if ctx.Err() != nil {
 				log.Fatalf("%s Context error %v", logPrefix, err)
@@ -188,78 +185,34 @@ func main() {
 	<-consumer.ready
 	log.Infof("%s Consumer is ready", logPrefix)
 	log.Debugf("%s Sarama consumer up and running\n", logPrefix)
-
-	sigterm := make(chan os.Signal, 1)
-	signal.Notify(sigterm, syscall.SIGINT, syscall.SIGTERM)
-	select {
-	case <-ctx.Done():
-		log.Errorf("%s Terminating thus context is closed\n", logPrefix)
-	case <-sigterm:
-		log.Errorf("%s Terminating via signal\n", logPrefix)
-	}
-	cancel()
-	wg.Wait()
-	if err = client.Close(); err != nil {
-		log.Panicf("%s Error closing client:\n%v\n", logPrefix, err)
-	}
 }
 
-func buildMessage() {
-	var messagesCount int32
-	var sb strings.Builder
-	for {
-		message := <-outChannel
-		sb.WriteString(string(message))
-		// messagesCount++
-		atomic.AddInt32(&messagesCount, 1)
-		if messagesCount >= userSession.GeneralSettings.BucketSize {
-			messagesCount = 0
-			// Should bound num of goroutines
-			go sendMessage(sb.String())
-			sb.Reset()
+func setupCloseHandler(cancel context.CancelFunc) {
+	client.Close()
+	c := make(chan os.Signal)
+	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-c
+		log.Infof("[main][setupCloseHandler] Closing app")
+		cancel()
+	}()
+}
+
+func retryConnection() error {
+	logPrefix := "[main][retryConnection]"
+	var err error
+	for i := 1; i <= userSession.GeneralSettings.RetryCount; i++ {
+		dstAddrConnection, err = net.Dial("tcp", userSession.ConnectionSettings.Destination)
+		log.Warnf("%s Trying to connect to destination target. Attempts left: %d", logPrefix, userSession.GeneralSettings.RetryCount-i)
+		// If no error then target is avaliable
+		if err == nil {
+			log.Infof("%s Connection to destination target (%s) establihed", logPrefix, userSession.ConnectionSettings.Destination)
+			break
 		}
+		time.Sleep(time.Duration(userSession.GeneralSettings.TCPConnectionRetryTimeout) * time.Second)
 	}
-}
-
-func sendMessage(message string) {
-	logPrefix := "[main][sendMessage]"
-	// May be bad thing
-	writer := bufio.NewWriter(dstAddrConnection)
-	_, err := writer.Write([]byte(message))
-	if err == nil {
-		_ = writer.Flush()
-	} else {
-		//If error occures -> no connection
-		for i := 1; i <= userSession.GeneralSettings.RetryCount; i++ {
-			dstAddrConnection, err = net.Dial("tcp", userSession.ConnectionSettings.Destination)
-			log.Warnf("%s Trying to connect to destination target. Attempts left: %d", logPrefix, userSession.GeneralSettings.RetryCount-i)
-			// If no error then target is avaliable
-			if err == nil {
-				log.Infof("%s Connection to destination target (%s) establihed", logPrefix, userSession.ConnectionSettings.Destination)
-				break
-			}
-			time.Sleep(time.Duration(userSession.GeneralSettings.TCPConnectionRetryTimeout) * time.Second)
-		}
-		if dstAddrConnection == nil {
-			log.Fatalf("%s Cannot connect to destination", logPrefix)
-		}
-	}
-}
-
-//Setup is run at the beginning of a new session, before ConsumeClaim
-func (consumer *Consumer) Setup(sarama.ConsumerGroupSession) error {
-	return nil
-}
-
-// Cleanup is run at the end of a session, once all ConsumeClaim goroutines have exited
-func (consumer *Consumer) Cleanup(sarama.ConsumerGroupSession) error {
-	return nil
-}
-
-// ConsumeClaim must start a consumer loop of ConsumerGroupClaim's Messages().
-func (consumer *Consumer) ConsumeClaim(session sarama.ConsumerGroupSession, claim sarama.ConsumerGroupClaim) error {
-	for message := range claim.Messages() {
-		outChannel <- message.Value
+	if dstAddrConnection == nil {
+		return errors.New("Cannot connect to destination")
 	}
 	return nil
 }
