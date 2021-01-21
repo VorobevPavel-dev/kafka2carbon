@@ -102,6 +102,7 @@ func main() {
 		log.SetLevel(log.TraceLevel)
 		break
 	}
+	log.Println("%s Current messaging level: %s", logPrefix, userSession.LoggingSettings.LogLevel)
 
 	//Starting function to build messages in buckets
 	go buildMessage()
