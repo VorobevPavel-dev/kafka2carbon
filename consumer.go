@@ -19,8 +19,14 @@ func (consumer *Consumer) Cleanup(sarama.ConsumerGroupSession) error {
 
 // ConsumeClaim must start a consumer loop of ConsumerGroupClaim's Messages().
 func (consumer *Consumer) ConsumeClaim(session sarama.ConsumerGroupSession, claim sarama.ConsumerGroupClaim) error {
-	for message := range claim.Messages() {
-		outChannel <- message.Value
+	for {
+		select {
+		case <-stop:
+			return nil
+		default:
+			for message := range claim.Messages() {
+				outChannel <- message.Value
+			}
+		}
 	}
-	return nil
 }

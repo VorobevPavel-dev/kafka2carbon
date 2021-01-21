@@ -24,6 +24,7 @@ var (
 	consumer          Consumer
 	userSession       config.Config
 	client            sarama.ConsumerGroup
+	stop              chan bool
 )
 
 func init() {
@@ -151,7 +152,7 @@ func main() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	//Setting close handler
-	setupCloseHandler(cancel)
+	setupCloseHandler(ctx, cancel)
 
 	//Creating a new consumer group
 	client, err = sarama.NewConsumerGroup(
@@ -164,6 +165,7 @@ func main() {
 	}
 	log.Infof("%s Created new consumer group", logPrefix)
 
+	stop = make(chan bool)
 	wg := &sync.WaitGroup{}
 	wg.Add(1)
 	go func() {
@@ -188,14 +190,22 @@ func main() {
 	log.Debugf("%s Sarama consumer up and running\n", logPrefix)
 }
 
-func setupCloseHandler(cancel context.CancelFunc) {
-	client.Close()
+func setupCloseHandler(ctx context.Context, cancel context.CancelFunc) {
 	c := make(chan os.Signal)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		<-c
 		log.Infof("[main][setupCloseHandler] Closing app")
+		stop <- true
+		err := client.Close()
+		clearBuffer()
+		if err != nil {
+			log.Errorf("%s Client was closed badly. There is a possibility of losing data")
+			os.Exit(1)
+		}
+		log.Infof("%s Client was closed successfully. Trying to clear buffer")
 		cancel()
+		os.Exit(0)
 	}()
 }
 
